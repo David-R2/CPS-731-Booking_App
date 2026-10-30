@@ -18,12 +18,22 @@ def make_engine(path: Path) -> Engine:
     )
 
 
+def ensure_schema(engine: Engine) -> None:
+    SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        columns = {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info(booking)")
+        }
+        if "series_id" not in columns:
+            connection.exec_driver_sql("ALTER TABLE booking ADD COLUMN series_id INTEGER")
+
+
 def initialize(path: Path, *, reset: bool = False) -> None:
     engine = make_engine(path)
     try:
         if reset:
             SQLModel.metadata.drop_all(engine)
-        SQLModel.metadata.create_all(engine)
+        ensure_schema(engine)
         with Session(engine) as session:
             for user in [User(id=1, name="Alex Chen"), User(id=2, name="Sam Patel")]:
                 if session.get(User, user.id) is None:

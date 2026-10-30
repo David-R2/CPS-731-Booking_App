@@ -46,3 +46,11 @@ class BookingRead(BaseModel):
     start: datetime
     end: datetime
     cancelled: bool
+
+
+class BookingSeriesCreate(BookingCreate):
+    recurrence_count: int = Field(strict=True, ge=1, le=12)
+
+
+class BookingSeriesRead(BookingRead):
+    series_id: int

@@ -8,10 +8,10 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlmodel import Session, SQLModel, col, select
+from sqlmodel import Session, col, select
 
 from booking.clock import campus_now
-from booking.database import database_path, make_engine
+from booking.database import database_path, ensure_schema, make_engine
 from booking.models import Booking, Resource, User
 from booking.schemas import BookingCreate, BookingRead, ErrorResponse
 
@@ -24,7 +24,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
-            SQLModel.metadata.create_all(engine)
+            ensure_schema(engine)
             yield
         finally:
             engine.dispose()

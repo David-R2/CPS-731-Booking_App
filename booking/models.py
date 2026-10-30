@@ -21,3 +21,4 @@ class Booking(SQLModel, table=True):
     start: datetime
     end: datetime
     cancelled: bool = False
+    series_id: int | None = Field(default=None)
