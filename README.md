@@ -102,6 +102,7 @@ passwords, login, authentication or user/resource administration endpoints.
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
+| `GET /series/{booking_id}` | Positive occurrence booking ID; no identity | 200, complete series in chronological order |
 | `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
 
 IDs are positive integers up to 9223372036854775807. JSON resource IDs must be
@@ -121,6 +122,18 @@ Refresh the dates to be in the future before sending. A fresh database returns:
 The response above assumes `X-User-ID: 1`. Retrieval returns the same record.
 Listing includes retained cancelled records; new bookings start uncancelled.
 Bookings survive server restart and repeat `init`; `reset --yes` deletes them.
+
+### Retrieving a booking series
+
+Use any occurrence's booking ID with `GET /series/{booking_id}` to retrieve the
+complete series. No identity is needed. The response is a JSON array ordered by
+the occurrences' start times, with booking ID as a deterministic tie-breaker.
+Every item has the standard booking fields plus its shared integer `series_id`,
+and cancelled occurrences remain in the result.
+
+An unknown booking returns **404**. An existing standalone booking returns
+**409** because it has no series. The existing booking endpoints do not expose
+`series_id`; series membership is available only through this endpoint.
 
 All timestamps represent **Toronto campus wall time** (`America/Toronto`), encoded
 as `YYYY-MM-DDTHH:MM:SS` with optional 1–6 fractional second digits and **no offset
