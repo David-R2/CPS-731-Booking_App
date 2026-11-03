@@ -14,6 +14,7 @@ from booking.clock import campus_now
 from booking.database import database_path, ensure_schema, make_engine
 from booking.models import Booking, Resource, User
 from booking.schemas import BookingCreate, BookingRead, ErrorResponse
+from booking.series import create_series_router
 
 
 def create_app(
@@ -33,7 +34,7 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue and single bookings."
+            "Resource catalogue, single bookings, and series retrieval."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -46,6 +47,8 @@ def create_app(
         return JSONResponse(
             status_code=422, content={"detail": "Invalid request shape or timestamp"}
         )
+
+    app.include_router(create_series_router(engine))
 
     @app.get("/resources", response_model=list[Resource])
     def list_resources() -> list[Resource]:
