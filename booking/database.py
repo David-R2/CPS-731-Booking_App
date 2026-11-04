@@ -21,11 +21,20 @@ def make_engine(path: Path) -> Engine:
 def ensure_schema(engine: Engine) -> None:
     SQLModel.metadata.create_all(engine)
     with engine.begin() as connection:
-        columns = {
+        booking_columns = {
             row[1] for row in connection.exec_driver_sql("PRAGMA table_info(booking)")
         }
-        if "series_id" not in columns:
-            connection.exec_driver_sql("ALTER TABLE booking ADD COLUMN series_id INTEGER")
+        if "series_id" not in booking_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE booking ADD COLUMN series_id INTEGER"
+            )
+        user_columns = {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info(user)")
+        }
+        if "booking_quota" not in user_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE user ADD COLUMN booking_quota INTEGER NOT NULL DEFAULT 3"
+            )
 
 
 def initialize(path: Path, *, reset: bool = False) -> None:

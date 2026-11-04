@@ -13,7 +13,22 @@ from sqlmodel import Session, col, select
 from booking.clock import campus_now
 from booking.database import database_path, ensure_schema, make_engine
 from booking.models import Booking, Resource, User
-from booking.schemas import BookingCreate, BookingRead, ErrorResponse
+from booking.schemas import BookingCreate, BookingQuotaRead, BookingRead, ErrorResponse
+
+UserId = Annotated[int, Header(gt=0, le=9223372036854775807)]
+
+
+def active_booking_count(session: Session, owner_id: int, now: datetime) -> int:
+    """Count one user's current and future uncancelled booking occurrences."""
+    return len(
+        session.exec(
+            select(Booking).where(
+                Booking.owner_id == owner_id,
+                col(Booking.cancelled).is_(False),
+                Booking.end > now,
+            )
+        ).all()
+    )
 
 
 def create_app(
@@ -61,7 +76,7 @@ def create_app(
     )
     def create_booking(
         request: BookingCreate,
-        x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
+        x_user_id: UserId,
     ) -> Booking:
         """Create a future booking of at most eight hours owned by X-User-ID.
 
@@ -71,16 +86,20 @@ def create_app(
         may race between availability checking and insertion.
         """
         with Session(engine) as session:
-            if session.get(User, x_user_id) is None:
+            user = session.get(User, x_user_id)
+            if user is None:
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            if request.start <= clock():
+            now = clock()
+            if request.start <= now:
                 raise HTTPException(422, "Start must be in the future")
             if request.end <= request.start:
                 raise HTTPException(422, "End must be after start")
             if request.end - request.start > timedelta(hours=8):
                 raise HTTPException(422, "Duration must be at most eight hours")
+            if active_booking_count(session, x_user_id, now) >= user.booking_quota:
+                raise HTTPException(409, "Booking quota reached")
             conflict = session.exec(
                 select(Booking).where(
                     Booking.resource_id == request.resource_id,
@@ -96,6 +115,24 @@ def create_app(
             session.commit()
             session.refresh(booking)
             return booking
+
+    @app.get(
+        "/me/quota",
+        response_model=BookingQuotaRead,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_booking_quota(x_user_id: UserId) -> BookingQuotaRead:
+        """Return the calling user's active-booking quota and remaining capacity."""
+        with Session(engine) as session:
+            user = session.get(User, x_user_id)
+            if user is None:
+                raise HTTPException(404, "Unknown user")
+            active_count = active_booking_count(session, x_user_id, clock())
+            return BookingQuotaRead(
+                booking_quota=user.booking_quota,
+                active_booking_count=active_count,
+                remaining_bookings=max(0, user.booking_quota - active_count),
+            )
 
     @app.get("/bookings", response_model=list[BookingRead])
     def list_bookings() -> list[Booking]:
@@ -129,7 +166,7 @@ def create_app(
     )
     def cancel_booking(
         booking_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
-        x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
+        x_user_id: UserId,
     ) -> Booking:
         """Cancel one booking as its owner using X-User-ID; no body is needed.
 

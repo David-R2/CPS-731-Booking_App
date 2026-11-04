@@ -5,7 +5,8 @@
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 This is a **course simulation of an existing system**, created for CPS731.
-Browse resources and create, retrieve, list and cancel persistent single bookings.
+Browse resources, inspect personal quota capacity, and create, retrieve, list and
+cancel persistent single bookings.
 
 ## Run locally
 
@@ -89,7 +90,7 @@ availability. This endpoint lists the catalogue, not available time slots.
 ## Simulated identity
 
 Initialization persists users **1: Alex Chen** and **2: Sam Patel**. Booking
-creation and cancellation use the `X-User-ID` header containing a seeded user's integer ID,
+creation, cancellation and quota lookup use the `X-User-ID` header containing a seeded user's integer ID,
 for example `X-User-ID: 1`. The acting user owns the booking; ownership is not
 chosen through a request-body field. Resource and booking reads need no identity.
 This is a local role simulation: anyone can choose either identity. There are no
@@ -100,6 +101,7 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
+| `GET /me/quota` | `X-User-ID` header | 200, caller's quota usage and remaining capacity |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
 | `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
@@ -136,6 +138,28 @@ start and exclude end, so 10:00–11:00 and 11:00–12:00 are adjacent and permi
 Any overlap with an uncancelled booking on the same resource is rejected;
 identical times on different resources are permitted.
 
+Each user has a persistent `booking_quota`, initialized to **3** for the sample
+users. A booking consumes quota when it is uncancelled and its end is strictly
+after the current Toronto campus time; current and future bookings therefore
+count, while cancelled and ended bookings do not. `POST /bookings` returns 409
+`Booking quota reached` when the caller already has their limit of active
+booking occurrences. Cancelling an eligible booking releases quota immediately.
+The app has no administration endpoint for changing quotas; they are a
+per-user persisted setting for course/system administration.
+
+Use `GET /me/quota` with `X-User-ID` to inspect the configured limit and its
+current use. For example, before any booking as user 1:
+
+```json
+{"booking_quota": 3, "active_booking_count": 0, "remaining_bookings": 3}
+```
+
+Booking-series request/response schemas and a `series_id` storage field are
+present as groundwork only; there is no series-creation API yet. When series
+creation is added, every active occurrence must be saved as an individual
+booking row and consumes one quota slot. A series is not treated as a single
+quota item.
+
 Only the owner may cancel a booking. An active booking can be cancelled strictly
 before its start; at or after start the request returns 409 and preserves it.
 Cancellation returns the same record with `cancelled: true`, retains it in reads
@@ -159,7 +183,7 @@ Errors use `{"detail": "message"}` consistently:
 | --- | --- |
 | 403 | `Only the owner can cancel this booking` |
 | 404 | `Unknown user`, `Unknown resource` or `Unknown booking` |
-| 409 | `Resource is already booked for this interval` or `Booking has already started` |
+| 409 | `Resource is already booked for this interval`, `Booking quota reached` or `Booking has already started` |
 | 422 | `Invalid request shape or timestamp`, `Start must be in the future`, `End must be after start` or `Duration must be at most eight hours` |
 
 A missing/malformed identity header also returns 422. Rejected creation or cancellation leaves
