@@ -5,8 +5,8 @@
 [![Python 3.14](https://img.shields.io/badge/python-3.14-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
 
 This is a **course simulation of an existing system**, created for CPS731.
-Browse resources, inspect personal quota capacity, and create, retrieve, list and
-cancel persistent single bookings.
+Browse resources and create, retrieve, list and cancel persistent single bookings,
+or create persistent weekly booking series.
 
 ## Run locally
 
@@ -90,7 +90,7 @@ availability. This endpoint lists the catalogue, not available time slots.
 ## Simulated identity
 
 Initialization persists users **1: Alex Chen** and **2: Sam Patel**. Booking
-creation, cancellation and quota lookup use the `X-User-ID` header containing a seeded user's integer ID,
+creation and cancellation use the `X-User-ID` header containing a seeded user's integer ID,
 for example `X-User-ID: 1`. The acting user owns the booking; ownership is not
 chosen through a request-body field. Resource and booking reads need no identity.
 This is a local role simulation: anyone can choose either identity. There are no
@@ -101,14 +101,14 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
-| `GET /me/quota` | `X-User-ID` header | 200, caller's quota usage and remaining capacity |
+| `POST /booking-series` | `X-User-ID` header and JSON with `recurrence_count` | 201, stored weekly occurrences |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
 | `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
 
 IDs are positive integers up to 9223372036854775807. JSON resource IDs must be
-integers. Creation accepts only `resource_id`, `start` and `end`; extra fields,
-including `owner_id`, `id` and `cancelled`, are rejected.
+integers. Single creation accepts only `resource_id`, `start` and `end`; extra
+fields, including `owner_id`, `id`, `series_id` and `cancelled`, are rejected.
 
 ```json
 {"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00"}
@@ -124,6 +124,30 @@ The response above assumes `X-User-ID: 1`. Retrieval returns the same record.
 Listing includes retained cancelled records; new bookings start uncancelled.
 Bookings survive server restart and repeat `init`; `reset --yes` deletes them.
 
+To create a weekly series, send the same fields plus an integer
+`recurrence_count` from 1 through 12:
+
+```json
+{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "recurrence_count": 3}
+```
+
+The response is an array of occurrence bookings in chronological order. Each
+occurrence is seven days after the previous one at the same campus-local time.
+Every occurrence has a unique booking `id`, while `series_id` is shared and
+equals the first occurrence's booking ID:
+
+```json
+[
+  {"id": 1, "owner_id": 1, "resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "cancelled": false, "series_id": 1},
+  {"id": 2, "owner_id": 1, "resource_id": 1, "start": "2030-01-22T10:00:00", "end": "2030-01-22T11:00:00", "cancelled": false, "series_id": 1},
+  {"id": 3, "owner_id": 1, "resource_id": 1, "start": "2030-01-29T10:00:00", "end": "2030-01-29T11:00:00", "cancelled": false, "series_id": 1}
+]
+```
+
+The series request does not accept `owner_id` or `series_id`; the acting user
+owns every occurrence. Existing booking reads continue to use the single-booking
+response shape and do not expose `series_id`.
+
 All timestamps represent **Toronto campus wall time** (`America/Toronto`), encoded
 as `YYYY-MM-DDTHH:MM:SS` with optional 1–6 fractional second digits and **no offset
 or Z**. Date-only values and numeric timestamps are rejected. The production
@@ -138,27 +162,13 @@ start and exclude end, so 10:00–11:00 and 11:00–12:00 are adjacent and permi
 Any overlap with an uncancelled booking on the same resource is rejected;
 identical times on different resources are permitted.
 
-Each user has a persistent `booking_quota`, initialized to **3** for the sample
-users. A booking consumes quota when it is uncancelled and its end is strictly
-after the current Toronto campus time; current and future bookings therefore
-count, while cancelled and ended bookings do not. `POST /bookings` returns 409
-`Booking quota reached` when the caller already has their limit of active
-booking occurrences. Cancelling an eligible booking releases quota immediately.
-The app has no administration endpoint for changing quotas; they are a
-per-user persisted setting for course/system administration.
-
-Use `GET /me/quota` with `X-User-ID` to inspect the configured limit and its
-current use. For example, before any booking as user 1:
-
-```json
-{"booking_quota": 3, "active_booking_count": 0, "remaining_bookings": 3}
-```
-
-Booking-series request/response schemas and a `series_id` storage field are
-present as groundwork only; there is no series-creation API yet. When series
-creation is added, every active occurrence must be saved as an individual
-booking row and consumes one quota slot. A series is not treated as a single
-quota item.
+Series creation applies the same time and conflict rules to every generated
+occurrence. It checks the complete series before inserting any occurrence. If
+one occurrence conflicts with an uncancelled single booking or recurring
+occurrence, the request returns 409 and stores none of the proposed series. If
+all occurrences are valid and available, they are stored in one transaction.
+Existing `POST /bookings` conflict checks include recurring occurrences because
+each occurrence is stored as a regular booking row.
 
 Only the owner may cancel a booking. An active booking can be cancelled strictly
 before its start; at or after start the request returns 409 and preserves it.
@@ -173,9 +183,10 @@ curl -X POST -H 'X-User-ID: 1' http://127.0.0.1:8000/bookings/1/cancel
 
 In PowerShell use `curl.exe`. Substitute the ID returned by creation.
 
-These guarantees apply to **sequential requests**. Simultaneous requests can
-both observe availability before either inserts a record. SQLite persistence
-alone does not make the availability check and insertion an atomic reservation.
+These guarantees apply to **sequential requests**. A series is persisted
+all-or-nothing within its request, but simultaneous requests can both observe
+availability before either inserts a record. SQLite persistence alone does not
+make the availability check and insertion an atomic reservation across requests.
 
 Errors use `{"detail": "message"}` consistently:
 
@@ -183,11 +194,11 @@ Errors use `{"detail": "message"}` consistently:
 | --- | --- |
 | 403 | `Only the owner can cancel this booking` |
 | 404 | `Unknown user`, `Unknown resource` or `Unknown booking` |
-| 409 | `Resource is already booked for this interval`, `Booking quota reached` or `Booking has already started` |
+| 409 | `Resource is already booked for this interval` or `Booking has already started` |
 | 422 | `Invalid request shape or timestamp`, `Start must be in the future`, `End must be after start` or `Duration must be at most eight hours` |
 
-A missing/malformed identity header also returns 422. Rejected creation or cancellation leaves
-all persisted bookings unchanged. Cancellation resolves the seeded user before
+A missing/malformed identity header also returns 422. Rejected single or series
+creation and rejected cancellation leave all persisted bookings unchanged. Cancellation resolves the seeded user before
 looking up the booking; unknown users and bookings return 404. The interactive docs describe these operations
 and their response models.
 

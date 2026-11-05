@@ -13,21 +13,39 @@ from sqlmodel import Session, col, select
 from booking.clock import campus_now
 from booking.database import database_path, ensure_schema, make_engine
 from booking.models import Booking, Resource, User
-from booking.schemas import BookingCreate, BookingQuotaRead, BookingRead, ErrorResponse
+from booking.schemas import (
+    BookingCreate,
+    BookingRead,
+    BookingSeriesCreate,
+    BookingSeriesRead,
+    ErrorResponse,
+)
 
 UserId = Annotated[int, Header(gt=0, le=9223372036854775807)]
 
 
-def active_booking_count(session: Session, owner_id: int, now: datetime) -> int:
-    """Count one user's current and future uncancelled booking occurrences."""
-    return len(
+def validate_interval(start: datetime, end: datetime, now: datetime) -> None:
+    if start <= now:
+        raise HTTPException(422, "Start must be in the future")
+    if end <= start:
+        raise HTTPException(422, "End must be after start")
+    if end - start > timedelta(hours=8):
+        raise HTTPException(422, "Duration must be at most eight hours")
+
+
+def has_conflict(
+    session: Session, resource_id: int, start: datetime, end: datetime
+) -> bool:
+    return (
         session.exec(
             select(Booking).where(
-                Booking.owner_id == owner_id,
+                Booking.resource_id == resource_id,
                 col(Booking.cancelled).is_(False),
-                Booking.end > now,
+                Booking.start < end,
+                Booking.end > start,
             )
-        ).all()
+        ).first()
+        is not None
     )
 
 
@@ -48,7 +66,7 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue and single bookings."
+            "Resource catalogue, single bookings and weekly booking series."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -91,24 +109,8 @@ def create_app(
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            now = clock()
-            if request.start <= now:
-                raise HTTPException(422, "Start must be in the future")
-            if request.end <= request.start:
-                raise HTTPException(422, "End must be after start")
-            if request.end - request.start > timedelta(hours=8):
-                raise HTTPException(422, "Duration must be at most eight hours")
-            if active_booking_count(session, x_user_id, now) >= user.booking_quota:
-                raise HTTPException(409, "Booking quota reached")
-            conflict = session.exec(
-                select(Booking).where(
-                    Booking.resource_id == request.resource_id,
-                    col(Booking.cancelled).is_(False),
-                    Booking.start < request.end,
-                    Booking.end > request.start,
-                )
-            ).first()
-            if conflict is not None:
+            validate_interval(request.start, request.end, clock())
+            if has_conflict(session, request.resource_id, request.start, request.end):
                 raise HTTPException(409, "Resource is already booked for this interval")
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
@@ -116,23 +118,62 @@ def create_app(
             session.refresh(booking)
             return booking
 
-    @app.get(
-        "/me/quota",
-        response_model=BookingQuotaRead,
-        responses={404: {"model": ErrorResponse}},
+    @app.post(
+        "/booking-series",
+        response_model=list[BookingSeriesRead],
+        status_code=201,
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     )
-    def get_booking_quota(x_user_id: UserId) -> BookingQuotaRead:
-        """Return the calling user's active-booking quota and remaining capacity."""
+    def create_booking_series(
+        request: BookingSeriesCreate,
+        x_user_id: UserId,
+    ) -> list[Booking]:
         with Session(engine) as session:
-            user = session.get(User, x_user_id)
-            if user is None:
+            if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
-            active_count = active_booking_count(session, x_user_id, clock())
-            return BookingQuotaRead(
-                booking_quota=user.booking_quota,
-                active_booking_count=active_count,
-                remaining_bookings=max(0, user.booking_quota - active_count),
+            if session.get(Resource, request.resource_id) is None:
+                raise HTTPException(404, "Unknown resource")
+            now = clock()
+            occurrences = [
+                (
+                    request.start + timedelta(weeks=index),
+                    request.end + timedelta(weeks=index),
+                )
+                for index in range(request.recurrence_count)
+            ]
+            for start, end in occurrences:
+                validate_interval(start, end, now)
+                if has_conflict(session, request.resource_id, start, end):
+                    raise HTTPException(
+                        409, "Resource is already booked for this interval"
+                    )
+            first_start, first_end = occurrences[0]
+            first = Booking(
+                owner_id=x_user_id,
+                resource_id=request.resource_id,
+                start=first_start,
+                end=first_end,
             )
+            session.add(first)
+            session.flush()
+            if first.id is None:
+                raise RuntimeError("Booking ID was not generated")
+            first.series_id = first.id
+            bookings = [first]
+            for start, end in occurrences[1:]:
+                booking = Booking(
+                    owner_id=x_user_id,
+                    resource_id=request.resource_id,
+                    start=start,
+                    end=end,
+                    series_id=first.id,
+                )
+                session.add(booking)
+                bookings.append(booking)
+            session.commit()
+            for booking in bookings:
+                session.refresh(booking)
+            return bookings
 
     @app.get("/bookings", response_model=list[BookingRead])
     def list_bookings() -> list[Booking]:

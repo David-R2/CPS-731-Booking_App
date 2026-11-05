@@ -48,12 +48,6 @@ class BookingRead(BaseModel):
     cancelled: bool
 
 
-class BookingQuotaRead(BaseModel):
-    booking_quota: int
-    active_booking_count: int
-    remaining_bookings: int
-
-
 class BookingSeriesCreate(BookingCreate):
     recurrence_count: int = Field(strict=True, ge=1, le=12)
 
