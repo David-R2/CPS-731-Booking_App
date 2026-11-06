@@ -138,7 +138,7 @@ def create_app(
                     request.start + timedelta(weeks=index),
                     request.end + timedelta(weeks=index),
                 )
-                for index in range(request.recurrence_count)
+                for index in range(request.count)
             ]
             for start, end in occurrences:
                 validate_interval(start, end, now)

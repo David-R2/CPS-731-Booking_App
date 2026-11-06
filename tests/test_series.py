@@ -75,8 +75,8 @@ def single_body(start: datetime, end: datetime, resource_id: int = 1) -> dict[st
     return {"resource_id": resource_id, "start": ts(start), "end": ts(end)}
 
 
-def create_series(env: Env, **kwargs: Any) -> dict[str, Any]:
-    response = env.api.post("/series", headers=OWNER, json=series_body(**kwargs))
+def create_series(env: Env, **kwargs: Any) -> list[dict[str, Any]]:
+    response = env.api.post("/booking-series", headers=OWNER, json=series_body(**kwargs))
     assert response.status_code == 201, response.text
     body: dict[str, Any] = response.json()
     return body
@@ -94,7 +94,7 @@ def assert_rejected_without_changes(
 ) -> None:
     """Reject the request AND leave every stored booking exactly as it was."""
     before = bookings(env)
-    response = env.api.post("/series", headers=headers, json=body)
+    response = env.api.post("/booking-series", headers=headers, json=body)
     assert response.status_code == status, response.text
     assert isinstance(response.json()["detail"], str)
     assert bookings(env) == before
@@ -107,13 +107,10 @@ def assert_rejected_without_changes(
 def test_count_boundaries_create_weekly_occurrences(env: Env, count: int) -> None:
     series = create_series(env, count=count)
 
-    assert set(series) == {"id", "owner_id", "resource_id", "occurrences"}
-    assert series["owner_id"] == 1
-    assert series["resource_id"] == 1
-    occurrences = series["occurrences"]
-    assert len(occurrences) == count
-    assert len({o["id"] for o in occurrences}) == count
-    for week, occurrence in enumerate(occurrences):
+    assert len(series) == count
+    assert len({occurrence["id"] for occurrence in series}) == count
+
+    for week, occurrence in enumerate(series):
         start = START + timedelta(weeks=week)
         assert occurrence == {
             "id": occurrence["id"],
@@ -122,6 +119,7 @@ def test_count_boundaries_create_weekly_occurrences(env: Env, count: int) -> Non
             "start": ts(start),
             "end": ts(start + timedelta(hours=1)),
             "cancelled": False,
+            "series_id": series[0]["series_id"],
         }
         assert datetime.fromisoformat(occurrence["start"]).weekday() == 0
 
@@ -147,11 +145,11 @@ def test_missing_fields_are_rejected(env: Env, missing: str) -> None:
 
 
 def test_acting_user_owns_series_and_occurrences(env: Env) -> None:
-    response = env.api.post("/series", headers=OTHER, json=series_body())
+    response = env.api.post("/booking-series", headers=OTHER, json=series_body())
     assert response.status_code == 201
     series = response.json()
-    assert series["owner_id"] == 2
-    assert {o["owner_id"] for o in series["occurrences"]} == {2}
+    assert all(booking["owner_id"] == 2 for booking in series)
+    assert {o["owner_id"] for o in series} == {2}
 
 
 @pytest.mark.parametrize(
@@ -198,9 +196,9 @@ def test_duration_limit_and_overnight(env: Env) -> None:
     too_long = {**exactly_eight, "end": "2030-04-02T06:01:00"}
 
     assert_rejected_without_changes(env, too_long, 422)
-    response = env.api.post("/series", headers=OWNER, json=exactly_eight)
+    response = env.api.post("/booking-series", headers=OWNER, json=exactly_eight)
     assert response.status_code == 201
-    first = response.json()["occurrences"][0]
+    first = response.json()[0]
     assert (first["start"], first["end"]) == (
         "2030-04-01T22:00:00",
         "2030-04-02T06:00:00",
@@ -223,7 +221,7 @@ def test_non_campus_timestamp_formats_are_rejected(env: Env, start: str) -> None
 
 def test_fractional_seconds_are_accepted(env: Env) -> None:
     body = {**series_body(count=1), "start": "2030-04-01T10:00:00.123456"}
-    assert env.api.post("/series", headers=OWNER, json=body).status_code == 201
+    assert env.api.post("/booking-series", headers=OWNER, json=body).status_code == 201
 
 
 # ------------------------------------------------- conflicts & all-or-nothing (C4, C5)
@@ -318,7 +316,7 @@ def test_series_survives_restart_with_cancellation_state(tmp_path: Path) -> None
     database = tmp_path / "booking.sqlite3"
     initialize(database)
     with TestClient(create_app(database, clock=Clock(BEFORE_START))) as api:
-        created = api.post("/series", headers=OWNER, json=series_body())
+        created = api.post("/booking-series", headers=OWNER, json=series_body())
         assert created.status_code == 201
         series = created.json()
         second = series["occurrences"][1]
@@ -454,7 +452,7 @@ def test_series_cancel_only_affects_future_occurrences(env: Env) -> None:
 def test_series_cancel_occurrence_starting_exactly_now_is_kept(env: Env) -> None:
     series = create_series(env, count=2)
     env.clock.now = START  # week 1 starts exactly now: ongoing, not future
-    body = env.api.post(f"/series/{series['id']}/cancel", headers=OWNER).json()
+    body = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER).json()
     assert [o["cancelled"] for o in body["occurrences"]] == [False, True]
 
 
@@ -463,7 +461,7 @@ def test_series_cancel_preserves_already_cancelled_and_is_idempotent(env: Env) -
     first = series["occurrences"][0]
     env.api.post(f"/bookings/{first['id']}/cancel", headers=OWNER)
 
-    once = env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
+    once = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
     assert once.status_code == 200
     assert all(o["cancelled"] for o in once.json()["occurrences"])
     snapshot = bookings(env)
@@ -477,29 +475,29 @@ def test_series_cancel_preserves_already_cancelled_and_is_idempotent(env: Env) -
 def test_series_cancel_with_no_future_occurrences_changes_nothing(env: Env) -> None:
     series = create_series(env, count=2)
     env.clock.now = START + timedelta(weeks=3)
-    response = env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
+    response = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
     assert response.status_code == 200
     assert response.json() == series
 
 
 def test_series_cancel_releases_slots_for_new_bookings(env: Env) -> None:
     series = create_series(env)
-    env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
-    response = env.api.post("/series", headers=OTHER, json=series_body())
+    env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
+    response = env.api.post("/booking-series", headers=OTHER, json=series_body())
     assert response.status_code == 201
 
 
 def test_non_owner_cannot_cancel_series_even_after_cancellation(env: Env) -> None:
     series = create_series(env)
     before = bookings(env)
-    response = env.api.post(f"/series/{series['id']}/cancel", headers=OTHER)
+    response = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OTHER)
     assert response.status_code == 403
     assert bookings(env) == before
 
-    env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
+    env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
     after_owner = bookings(env)
     assert (
-        env.api.post(f"/series/{series['id']}/cancel", headers=OTHER).status_code == 403
+        env.api.post(f"/booking-series/{series['id']}/cancel", headers=OTHER).status_code == 403
     )
     assert bookings(env) == after_owner
 
