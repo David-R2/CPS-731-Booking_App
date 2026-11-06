@@ -101,10 +101,7 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
-<<<<<<< HEAD
-=======
 | `POST /booking-series` | `X-User-ID` header and JSON with `recurrence_count` | 201, stored weekly occurrences |
->>>>>>> 61c8459 (Implement recurring booking series creation)
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
 | `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
@@ -165,8 +162,6 @@ start and exclude end, so 10:00–11:00 and 11:00–12:00 are adjacent and permi
 Any overlap with an uncancelled booking on the same resource is rejected;
 identical times on different resources are permitted.
 
-<<<<<<< HEAD
-=======
 Series creation applies the same time and conflict rules to every generated
 occurrence. It checks the complete series before inserting any occurrence. If
 one occurrence conflicts with an uncancelled single booking or recurring
@@ -175,7 +170,6 @@ all occurrences are valid and available, they are stored in one transaction.
 Existing `POST /bookings` conflict checks include recurring occurrences because
 each occurrence is stored as a regular booking row.
 
->>>>>>> 61c8459 (Implement recurring booking series creation)
 Only the owner may cancel a booking. An active booking can be cancelled strictly
 before its start; at or after start the request returns 409 and preserves it.
 Cancellation returns the same record with `cancelled: true`, retains it in reads
