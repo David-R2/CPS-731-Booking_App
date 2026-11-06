@@ -195,7 +195,7 @@ def create_app(
                 raise HTTPException(404, "Unknown booking")
             return booking
 
-     @app.post(
+    @app.post(
         "/bookings/{booking_id}/cancel",
         response_model=BookingRead | list[BookingSeriesRead],
         responses={
