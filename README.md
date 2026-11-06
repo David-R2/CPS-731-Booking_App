@@ -126,6 +126,7 @@ Listing includes retained cancelled records; new bookings start uncancelled.
 Bookings survive server restart and repeat `init`; `reset --yes` deletes them.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 To create a weekly series, send the same fields plus an integer
 `recurrence_count` from 1 through 12:
 
@@ -150,6 +151,8 @@ The series request does not accept `owner_id` or `series_id`; the acting user
 owns every occurrence. Existing booking reads continue to use the single-booking
 response shape and do not expose `series_id`.
 =======
+=======
+>>>>>>> 0469d2d2e063dfc5d4574b7a1108b237e1e7eb3f
 ### Retrieving a booking series
 
 Use any occurrence's booking ID with `GET /series/{booking_id}` to retrieve the
@@ -161,7 +164,10 @@ and cancelled occurrences remain in the result.
 An unknown booking returns **404**. An existing standalone booking returns
 **409** because it has no series. The existing booking endpoints do not expose
 `series_id`; series membership is available only through this endpoint.
+<<<<<<< HEAD
 >>>>>>> 8cfe42c (series retrieval complete)
+=======
+>>>>>>> 0469d2d2e063dfc5d4574b7a1108b237e1e7eb3f
 
 All timestamps represent **Toronto campus wall time** (`America/Toronto`), encoded
 as `YYYY-MM-DDTHH:MM:SS` with optional 1–6 fractional second digits and **no offset
