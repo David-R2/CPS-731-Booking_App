@@ -101,7 +101,9 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
-| `POST /booking-series` | `X-User-ID` header and JSON with `recurrence_count` | 201, stored weekly occurrences |
+| `POST /series` | `X-User-ID` header and JSON with `count` | 201, stored weekly series |
+| `GET /series/{series_id}` | Positive integer ID; no identity | 200, series with all occurrences |
+| `POST /series/{series_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, series after cancelling future occurrences |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
 | `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
@@ -124,29 +126,34 @@ The response above assumes `X-User-ID: 1`. Retrieval returns the same record.
 Listing includes retained cancelled records; new bookings start uncancelled.
 Bookings survive server restart and repeat `init`; `reset --yes` deletes them.
 
-To create a weekly series, send the same fields plus an integer
-`recurrence_count` from 1 through 12:
+To create a weekly series, send the same fields plus an integer `count` from
+1 through 12:
 
 ```json
-{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "recurrence_count": 3}
+{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "count": 3}
 ```
 
-The response is an array of occurrence bookings in chronological order. Each
-occurrence is seven days after the previous one at the same campus-local time.
-Every occurrence has a unique booking `id`, while `series_id` is shared and
-equals the first occurrence's booking ID:
+The response is the stored series. Occurrences are ordinary bookings in
+chronological order, each seven days after the previous one at the same
+campus-local time. The series `id` equals the first occurrence's booking ID:
 
 ```json
-[
-  {"id": 1, "owner_id": 1, "resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "cancelled": false, "series_id": 1},
-  {"id": 2, "owner_id": 1, "resource_id": 1, "start": "2030-01-22T10:00:00", "end": "2030-01-22T11:00:00", "cancelled": false, "series_id": 1},
-  {"id": 3, "owner_id": 1, "resource_id": 1, "start": "2030-01-29T10:00:00", "end": "2030-01-29T11:00:00", "cancelled": false, "series_id": 1}
-]
+{
+  "id": 1, "owner_id": 1, "resource_id": 1,
+  "occurrences": [
+    {"id": 1, "owner_id": 1, "resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "cancelled": false},
+    {"id": 2, "owner_id": 1, "resource_id": 1, "start": "2030-01-22T10:00:00", "end": "2030-01-22T11:00:00", "cancelled": false},
+    {"id": 3, "owner_id": 1, "resource_id": 1, "start": "2030-01-29T10:00:00", "end": "2030-01-29T11:00:00", "cancelled": false}
+  ]
+}
 ```
 
-The series request does not accept `owner_id` or `series_id`; the acting user
-owns every occurrence. Existing booking reads continue to use the single-booking
-response shape and do not expose `series_id`.
+Creation is all-or-nothing: if any occurrence is invalid or conflicts, nothing is
+stored. The series request does not accept `owner_id` or `id`; the acting user
+owns every occurrence. Single occurrences can be cancelled with
+`POST /bookings/{booking_id}/cancel`. `POST /series/{series_id}/cancel` cancels
+only occurrences starting strictly after now; past, ongoing and already-cancelled
+occurrences are kept, and repeating it changes nothing. Only the owner may cancel.
 
 All timestamps represent **Toronto campus wall time** (`America/Toronto`), encoded
 as `YYYY-MM-DDTHH:MM:SS` with optional 1–6 fractional second digits and **no offset
