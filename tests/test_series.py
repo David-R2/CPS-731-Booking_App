@@ -354,7 +354,7 @@ def test_single_booking_cannot_overlap_occurrence(env: Env) -> None:
     )
     assert response.status_code == 409
     assert bookings(env) == before
-    assert env.api.get(f"/series/{series['id']}").json() == series
+    assert env.api.get(f"/series/{series[0]['id']}").json() == series
 
 
 def test_single_booking_contract_unchanged(env: Env) -> None:
@@ -379,15 +379,19 @@ def test_single_booking_contract_unchanged(env: Env) -> None:
 
 def test_cancel_one_occurrence_leaves_others_and_releases_slot(env: Env) -> None:
     series = create_series(env)
-    second = series["occurrences"][1]
+    second = series[1]
 
     response = env.api.post(f"/bookings/{second['id']}/cancel", headers=OWNER)
     assert response.status_code == 200
-    assert response.json() == {**second, "cancelled": True}
+    assert response.json() == {
+    **{key: value for key, value in second.items() if key != "series_id"},
+    "cancelled": True,
+}
 
-    after = env.api.get(f"/series/{series['id']}").json()
-    assert [o["cancelled"] for o in after["occurrences"]] == [False, True, False]
-    assert len(after["occurrences"]) == 3  # cancelled record retained (C9)
+
+    after = env.api.get(f"/series/{series[0]['id']}").json()
+    assert [o["cancelled"] for o in after] == [False, True, False]
+    assert len(after) == 3  # cancelled record retained (C9)
 
     # Another user can take the released slot; other weeks stay reserved.
     released = datetime.fromisoformat(second["start"])
@@ -404,7 +408,7 @@ def test_cancel_one_occurrence_leaves_others_and_releases_slot(env: Env) -> None
 
 
 def test_cancel_occurrence_just_before_start_succeeds(env: Env) -> None:
-    first = create_series(env)["occurrences"][0]
+    first = create_series(env)[0]
     env.clock.now = START - timedelta(microseconds=1)
     response = env.api.post(f"/bookings/{first['id']}/cancel", headers=OWNER)
     assert response.status_code == 200
@@ -412,20 +416,24 @@ def test_cancel_occurrence_just_before_start_succeeds(env: Env) -> None:
 
 
 def test_cancel_occurrence_exactly_at_start_fails(env: Env) -> None:
-    first = create_series(env)["occurrences"][0]
+    first = create_series(env)[0]
     env.clock.now = START
     response = env.api.post(f"/bookings/{first['id']}/cancel", headers=OWNER)
     assert response.status_code == 409
-    assert env.api.get(f"/bookings/{first['id']}").json() == first
+    assert env.api.get(f"/bookings/{first['id']}").json() == {
+    key: value for key, value in first.items() if key != "series_id"
+}
 
 
 def test_non_owner_cannot_cancel_occurrence_even_after_cancellation(env: Env) -> None:
-    first = create_series(env)["occurrences"][0]
+    first = create_series(env)[0]
     assert (
         env.api.post(f"/bookings/{first['id']}/cancel", headers=OTHER).status_code
         == 403
     )
-    assert env.api.get(f"/bookings/{first['id']}").json() == first
+    assert env.api.get(f"/bookings/{first['id']}").json() == {
+    key: value for key, value in first.items() if key != "series_id"
+}
 
     cancelled = env.api.post(f"/bookings/{first['id']}/cancel", headers=OWNER).json()
     assert (
@@ -442,78 +450,120 @@ def test_non_owner_cannot_cancel_occurrence_even_after_cancellation(env: Env) ->
 
 def test_series_cancel_only_affects_future_occurrences(env: Env) -> None:
     series = create_series(env, count=4)
-    ids = [o["id"] for o in series["occurrences"]]
+    ids = [occurrence["id"] for occurrence in series]
     # Week 1 is past, week 2 is ongoing (now = 10:30 on its day), weeks 3-4 future.
     env.clock.now = START + timedelta(weeks=1, minutes=30)
 
-    response = env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
+    response = env.api.post(
+    f"/bookings/{series[0]['id']}/cancel",
+    headers=OWNER,
+    params={"future": "true"},
+)
     assert response.status_code == 200
     body = response.json()
-    assert body["id"] == series["id"]
-    assert [o["id"] for o in body["occurrences"]] == ids
-    assert [o["cancelled"] for o in body["occurrences"]] == [False, False, True, True]
-    assert env.api.get(f"/series/{series['id']}").json() == body
+    assert [o["id"] for o in body] == ids
+    assert [o["cancelled"] for o in body] == [False, False, True, True]
+    assert env.api.get(f"/series/{series[0]['id']}").json() == body
     assert len(bookings(env)) == 4  # nothing deleted
 
 
 def test_series_cancel_occurrence_starting_exactly_now_is_kept(env: Env) -> None:
     series = create_series(env, count=2)
     env.clock.now = START  # week 1 starts exactly now: ongoing, not future
-    body = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER).json()
-    assert [o["cancelled"] for o in body["occurrences"]] == [False, True]
+    body = env.api.post(
+    f"/bookings/{series[0]['id']}/cancel",
+    headers=OWNER,
+    params={"future": "true"},
+).json()
+    assert [o["cancelled"] for o in body] == [False, True]
 
 
 def test_series_cancel_preserves_already_cancelled_and_is_idempotent(env: Env) -> None:
     series = create_series(env)
-    first = series["occurrences"][0]
+    first = series[0]
     env.api.post(f"/bookings/{first['id']}/cancel", headers=OWNER)
 
-    once = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
+    once = env.api.post(
+        f"/bookings/{first['id']}/cancel",
+        headers=OWNER,
+        params={"future": "true"},
+    )
     assert once.status_code == 200
-    assert all(o["cancelled"] for o in once.json()["occurrences"])
+    assert all(occurrence["cancelled"] for occurrence in once.json())
     snapshot = bookings(env)
 
-    twice = env.api.post(f"/series/{series['id']}/cancel", headers=OWNER)
+    twice = env.api.post(
+        f"/bookings/{first['id']}/cancel",
+        headers=OWNER,
+        params={"future": "true"},
+    )
     assert twice.status_code == 200
     assert twice.json() == once.json()
     assert bookings(env) == snapshot
 
 
+
 def test_series_cancel_with_no_future_occurrences_changes_nothing(env: Env) -> None:
     series = create_series(env, count=2)
     env.clock.now = START + timedelta(weeks=3)
-    response = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
-    assert response.status_code == 200
-    assert response.json() == series
+    before = bookings(env)
+
+    response = env.api.post(
+        f"/bookings/{series[0]['id']}/cancel",
+        headers=OWNER,
+        params={"future": "true"},
+    )
+
+    assert response.status_code == 422
+    assert bookings(env) == before
 
 
 def test_series_cancel_releases_slots_for_new_bookings(env: Env) -> None:
     series = create_series(env)
-    env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
+    env.api.post(
+    f"/bookings/{series[0]['id']}/cancel",
+    headers=OWNER,
+    params={"future": "true"},
+)
     response = env.api.post("/booking-series", headers=OTHER, json=series_body())
     assert response.status_code == 201
 
 
 def test_non_owner_cannot_cancel_series_even_after_cancellation(env: Env) -> None:
     series = create_series(env)
+    series_id = series[0]["id"]
     before = bookings(env)
-    response = env.api.post(f"/booking-series/{series['id']}/cancel", headers=OTHER)
+
+    response = env.api.post(
+        f"/bookings/{series_id}/cancel",
+        headers=OTHER,
+        params={"future": "true"},
+    )
     assert response.status_code == 403
     assert bookings(env) == before
 
-    env.api.post(f"/booking-series/{series['id']}/cancel", headers=OWNER)
-    after_owner = bookings(env)
-    assert (
-        env.api.post(f"/booking-series/{series['id']}/cancel", headers=OTHER).status_code == 403
+    env.api.post(
+        f"/bookings/{series_id}/cancel",
+        headers=OWNER,
+        params={"future": "true"},
     )
+    after_owner = bookings(env)
+
+    response = env.api.post(
+        f"/bookings/{series_id}/cancel",
+        headers=OTHER,
+        params={"future": "true"},
+    )
+    assert response.status_code == 403
     assert bookings(env) == after_owner
+
 
 
 @pytest.mark.parametrize(
     ("path", "headers", "status"),
     [
-        ("/series/999999/cancel", OWNER, 404),
-        ("/series/0/cancel", OWNER, 422),
+        ("/bookings/999999/cancel?future=true", OWNER, 404),
+        ("/bookings/0/cancel?future=true", OWNER, 422),
         ("{id}", {"X-User-ID": "999"}, 404),
         ("{id}", {}, 422),
     ],
@@ -523,7 +573,7 @@ def test_series_cancel_bad_input(
 ) -> None:
     series = create_series(env)
     if path == "{id}":
-        path = f"/series/{series['id']}/cancel"
+        path = f"/bookings/{series[0]['id']}/cancel?future=true"
     before = bookings(env)
     response = env.api.post(path, headers=headers)
     assert response.status_code == status
