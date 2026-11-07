@@ -43,11 +43,10 @@ def has_conflict(
                 col(Booking.cancelled).is_(False),
                 Booking.start < end,
                 Booking.end > start,
-                             )
+            )
         ).first()
         is not None
     )
-
 
 
 def create_app(
@@ -67,7 +66,7 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue, single bookings, weekly series booking and series retrieval."
+            "Resource catalogue, single bookings and weekly booking series."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -80,35 +79,6 @@ def create_app(
         return JSONResponse(
             status_code=422, content={"detail": "Invalid request shape or timestamp"}
         )
-
-    @app.get(
-        "/series/{booking_id}",
-        response_model=list[BookingSeriesRead],
-        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
-    )
-    def get_series(
-        booking_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
-    ) -> list[Booking]:
-        """Retrieve a complete series from any occurrence's booking ID.
-
-        No identity is needed. All occurrences, including cancelled records, are
-        returned in chronological order. Unknown bookings return 404; a
-        standalone booking returns 409 because it has no series.
-        """
-        with Session(engine) as session:
-            booking = session.get(Booking, booking_id)
-            if booking is None:
-                raise HTTPException(404, "Unknown booking")
-            series_id = booking.series_id
-            if series_id is None:
-                raise HTTPException(409, "Booking is not part of a series")
-            return list(
-                session.exec(
-                    select(Booking)
-                    .where(Booking.series_id == series_id)
-                    .order_by(col(Booking.start), col(Booking.id))
-                ).all()
-            )
 
     @app.get("/resources", response_model=list[Resource])
     def list_resources() -> list[Resource]:
@@ -147,16 +117,43 @@ def create_app(
             session.refresh(booking)
             return booking
 
+    def load_series(session: Session, series_id: int) -> BookingSeriesRead:
+        occurrences = list(
+            session.exec(
+                select(Booking)
+                .where(Booking.series_id == series_id)
+                .order_by(col(Booking.start), col(Booking.id))
+            ).all()
+        )
+        if not occurrences:
+            raise HTTPException(404, "Unknown series")
+        first = occurrences[0]
+        return BookingSeriesRead(
+            id=series_id,
+            owner_id=first.owner_id,
+            resource_id=first.resource_id,
+            occurrences=[
+                BookingRead.model_validate(o, from_attributes=True) for o in occurrences
+            ],
+        )
+
     @app.post(
-        "/booking-series",
-        response_model=list[BookingSeriesRead],
+        "/series",
+        response_model=BookingSeriesRead,
         status_code=201,
         responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
     )
-    def create_booking_series(
+    def create_series(
         request: BookingSeriesCreate,
         x_user_id: UserId,
-    ) -> list[Booking]:
+    ) -> BookingSeriesRead:
+        """Create `count` (1-12) weekly occurrences owned by X-User-ID.
+
+        Each occurrence follows the single-booking rules. The series is
+        all-or-nothing: any invalid or conflicting occurrence rejects the whole
+        request and stores nothing. The series ID equals the first occurrence's
+        booking ID.
+        """
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
@@ -188,21 +185,64 @@ def create_app(
             if first.id is None:
                 raise RuntimeError("Booking ID was not generated")
             first.series_id = first.id
-            bookings = [first]
             for start, end in occurrences[1:]:
-                booking = Booking(
-                    owner_id=x_user_id,
-                    resource_id=request.resource_id,
-                    start=start,
-                    end=end,
-                    series_id=first.id,
+                session.add(
+                    Booking(
+                        owner_id=x_user_id,
+                        resource_id=request.resource_id,
+                        start=start,
+                        end=end,
+                        series_id=first.id,
+                    )
                 )
-                session.add(booking)
-                bookings.append(booking)
             session.commit()
-            for booking in bookings:
-                session.refresh(booking)
-            return bookings
+            return load_series(session, first.id)
+
+    @app.get(
+        "/series/{series_id}",
+        response_model=BookingSeriesRead,
+        responses={404: {"model": ErrorResponse}},
+    )
+    def get_series(
+        series_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
+    ) -> BookingSeriesRead:
+        """Retrieve a series with all occurrences, including cancelled ones."""
+        with Session(engine) as session:
+            return load_series(session, series_id)
+
+    @app.post(
+        "/series/{series_id}/cancel",
+        response_model=BookingSeriesRead,
+        responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    )
+    def cancel_series(
+        series_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
+        x_user_id: UserId,
+    ) -> BookingSeriesRead:
+        """Cancel every future occurrence of a series as its owner.
+
+        Occurrences starting strictly after now are cancelled; past, ongoing
+        and already-cancelled occurrences are left unchanged. Repeating the
+        request is harmless. Other users receive 403, including on retries.
+        """
+        with Session(engine) as session:
+            if session.get(User, x_user_id) is None:
+                raise HTTPException(404, "Unknown user")
+            series = load_series(session, series_id)
+            if series.owner_id != x_user_id:
+                raise HTTPException(403, "Only the owner can cancel this series")
+            now = clock()
+            for booking in session.exec(
+                select(Booking).where(
+                    Booking.series_id == series_id,
+                    col(Booking.cancelled).is_(False),
+                    Booking.start > now,
+                )
+            ).all():
+                booking.cancelled = True
+                session.add(booking)
+            session.commit()
+            return load_series(session, series_id)
 
     @app.get("/bookings", response_model=list[BookingRead])
     def list_bookings() -> list[Booking]:

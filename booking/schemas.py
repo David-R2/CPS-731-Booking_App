@@ -52,5 +52,8 @@ class BookingSeriesCreate(BookingCreate):
     count: int = Field(strict=True, ge=1, le=12)
 
 
-class BookingSeriesRead(BookingRead):
-    series_id: int
+class BookingSeriesRead(BaseModel):
+    id: int
+    owner_id: int
+    resource_id: int
+    occurrences: list[BookingRead]
