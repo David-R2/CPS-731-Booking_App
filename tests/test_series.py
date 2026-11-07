@@ -265,7 +265,7 @@ def test_conflict_with_other_series_rejects_without_changing_it(env: Env) -> Non
     )
 
     assert_rejected_without_changes(env, overlapping_week_two, 409)
-    assert env.api.get(f"/series/{first['id']}").json() == first
+    assert env.api.get(f"/series/{first[0]['id']}").json() == first
 
 
 def test_identical_request_twice_is_rejected_second_time(env: Env) -> None:
@@ -291,16 +291,23 @@ def test_cancelled_booking_does_not_block_series(env: Env) -> None:
 def test_occurrences_are_ordinary_bookings(env: Env) -> None:
     series = create_series(env)
     listed = bookings(env)
-    for occurrence in series["occurrences"]:
-        assert occurrence in listed
+    for occurrence in series:
+        assert any(
+    booking == {key: value for key, value in occurrence.items() if key != "series_id"}
+    for booking in listed
+)
         fetched = env.api.get(f"/bookings/{occurrence['id']}")
         assert fetched.status_code == 200
-        assert fetched.json() == occurrence  # existing shape, no extra fields
+        assert fetched.json() == {
+    key: value for key, value in occurrence.items() if key != "series_id"
+} # existing shape, no extra fields
 
 
 def test_get_series_needs_no_identity_and_matches_creation(env: Env) -> None:
     series = create_series(env)
-    response = env.api.get(f"/series/{series['id']}")
+
+    response = env.api.get(f"/series/{series[0]['id']}")
+
     assert response.status_code == 200
     assert response.json() == series
 
