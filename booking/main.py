@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -227,41 +227,85 @@ def create_app(
 
     @app.post(
         "/bookings/{booking_id}/cancel",
-        response_model=BookingRead,
+        response_model=BookingRead | list[BookingSeriesRead],
         responses={
             403: {"model": ErrorResponse},
             404: {"model": ErrorResponse},
             409: {"model": ErrorResponse},
+            422: {"model": ErrorResponse},
         },
     )
     def cancel_booking(
         booking_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
         x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
-    ) -> Booking:
-        """Cancel one booking as its owner using X-User-ID; no body is needed.
-
-        Active bookings can be cancelled only strictly before start (409
-        otherwise). Retain the cancelled record and release its resource slot.
-        Owner retries return the unchanged record even after the original start;
-        other users receive 403, including on retries. Unknown users/bookings
-        return 404. Check ownership, then cancelled state, then start time.
-        """
+        future: bool = Query(default=False),
+    ) -> Booking | list[Booking]:
+        """Cancel one booking or all eligible future occurrences in its series."""
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
+
             booking = session.get(Booking, booking_id)
+
             if booking is None:
                 raise HTTPException(404, "Unknown booking")
-            if booking.owner_id != x_user_id:
-                raise HTTPException(403, "Only the owner can cancel this booking")
-            if booking.cancelled:
-                return booking
-            if booking.start <= clock():
-                raise HTTPException(409, "Booking has already started")
-            booking.cancelled = True
-            session.add(booking)
-            session.commit()
-            session.refresh(booking)
-            return booking
 
+            if booking.owner_id != x_user_id:
+                raise HTTPException(
+                    403, "Only the owner can cancel this booking"
+                )
+
+            if not future:
+                if booking.cancelled:
+                    return booking
+
+                if booking.start <= clock():
+                    raise HTTPException(409, "Booking has already started")
+
+                booking.cancelled = True
+                session.add(booking)
+                session.commit()
+                session.refresh(booking)
+                return booking
+
+            if booking.series_id is None:
+                raise HTTPException(
+                    422, "Booking is not part of a series"
+                )
+
+            occurrences = list(
+                session.exec(
+                    select(Booking)
+                    .where(Booking.series_id == booking.series_id)
+                    .order_by(col(Booking.start), col(Booking.id))
+                ).all()
+            )
+
+            now = clock()
+
+            if not any(item.start > now for item in occurrences):
+                raise HTTPException(
+                    422, "No future occurrences remain in this series"
+                )
+
+            for occurrence in occurrences:
+                if occurrence.owner_id != x_user_id:
+                    raise HTTPException(
+                        403, "Only the owner can cancel this series"
+                    )
+
+            for occurrence in occurrences:
+                if occurrence.start > now and not occurrence.cancelled:
+                    occurrence.cancelled = True
+                    session.add(occurrence)
+
+            session.commit()
+
+            return list(
+                session.exec(
+                    select(Booking)
+                    .where(Booking.series_id == booking.series_id)
+                    .order_by(col(Booking.start), col(Booking.id))
+                ).all()
+            )
     return app
