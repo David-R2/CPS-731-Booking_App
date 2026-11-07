@@ -326,18 +326,18 @@ def test_series_survives_restart_with_cancellation_state(tmp_path: Path) -> None
         created = api.post("/booking-series", headers=OWNER, json=series_body())
         assert created.status_code == 201
         series = created.json()
-        second = series["occurrences"][1]
+        second = series[1]
         assert (
             api.post(f"/bookings/{second['id']}/cancel", headers=OWNER).status_code
             == 200
         )
-        expected = api.get(f"/series/{series['id']}").json()
+        expected = api.get(f"/series/{series[0]['id']}").json()
         all_bookings = api.get("/bookings").json()
 
     with TestClient(create_app(database, clock=Clock(BEFORE_START))) as restarted:
-        assert restarted.get(f"/series/{series['id']}").json() == expected
+        assert restarted.get(f"/series/{series[0]['id']}").json() == expected
         assert restarted.get("/bookings").json() == all_bookings
-        assert [o["cancelled"] for o in expected["occurrences"]] == [False, True, False]
+        assert [o["cancelled"] for o in expected] == [False, True, False]
 
 
 # ------------------------------------------------------- single bookings (C10)
