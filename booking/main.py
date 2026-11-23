@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -8,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from booking.clock import campus_now
 from booking.database import database_path, ensure_schema, make_engine
@@ -22,6 +23,9 @@ from booking.schemas import (
 )
 
 UserId = Annotated[int, Header(gt=0, le=9223372036854775807)]
+
+DEFAULT_QUOTA_LIMIT = 12
+QUOTA_LIMIT_ENV = "BOOKING_QUOTA_LIMIT"
 
 
 def validate_interval(start: datetime, end: datetime, now: datetime) -> None:
@@ -43,17 +47,55 @@ def has_conflict(
                 col(Booking.cancelled).is_(False),
                 Booking.start < end,
                 Booking.end > start,
-                             )
+            )
         ).first()
         is not None
     )
 
 
+def resolve_quota_limit(quota_limit: int | None) -> int:
+    """Use the explicit limit, else BOOKING_QUOTA_LIMIT, else the default of 12."""
+    if quota_limit is None:
+        quota_limit = int(os.environ.get(QUOTA_LIMIT_ENV, DEFAULT_QUOTA_LIMIT))
+    if quota_limit < 1:
+        raise ValueError("Booking quota limit must be at least 1")
+    return quota_limit
+
+
+def future_booking_count(session: Session, owner_id: int, now: datetime) -> int:
+    """Count the owner's confirmed future occurrences across all resources.
+
+    A booking counts while it is uncancelled and its start is strictly after
+    now; ongoing, past and cancelled bookings do not count.
+    """
+    count = session.exec(
+        select(func.count())
+        .select_from(Booking)
+        .where(
+            Booking.owner_id == owner_id,
+            col(Booking.cancelled).is_(False),
+            Booking.start > now,
+        )
+    ).one()
+    return int(count)
+
+
+def ensure_within_quota(
+    session: Session, owner_id: int, now: datetime, requested: int, limit: int
+) -> None:
+    """Reject (409) if `requested` new occurrences would exceed the quota."""
+    if future_booking_count(session, owner_id, now) + requested > limit:
+        raise HTTPException(409, "Booking quota exceeded")
+
 
 def create_app(
-    database: Path | None = None, *, clock: Callable[[], datetime] = campus_now
+    database: Path | None = None,
+    *,
+    clock: Callable[[], datetime] = campus_now,
+    quota_limit: int | None = None,
 ) -> FastAPI:
     engine = make_engine(database if database is not None else database_path())
+    limit = resolve_quota_limit(quota_limit)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -67,7 +109,8 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue, single bookings, weekly series booking and series retrieval."
+            "Resource catalogue, single bookings, weekly series booking, "
+            "series retrieval and per-user booking quotas."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -130,7 +173,8 @@ def create_app(
 
         End must follow start; overnight intervals are allowed. Intervals include
         start and exclude end. Overlapping uncancelled bookings on the same
-        resource return 409. Sequential requests only; simultaneous requests
+        resource return 409, as does exceeding the per-user quota of confirmed
+        future bookings. Sequential requests only; simultaneous requests
         may race between availability checking and insertion.
         """
         with Session(engine) as session:
@@ -138,9 +182,11 @@ def create_app(
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            validate_interval(request.start, request.end, clock())
+            now = clock()
+            validate_interval(request.start, request.end, now)
             if has_conflict(session, request.resource_id, request.start, request.end):
                 raise HTTPException(409, "Resource is already booked for this interval")
+            ensure_within_quota(session, x_user_id, now, 1, limit)
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
             session.commit()
@@ -176,6 +222,7 @@ def create_app(
                     raise HTTPException(
                         409, "Resource is already booked for this interval"
                     )
+            ensure_within_quota(session, x_user_id, now, len(occurrences), limit)
             first_start, first_end = occurrences[0]
             first = Booking(
                 owner_id=x_user_id,
@@ -251,9 +298,7 @@ def create_app(
                 raise HTTPException(404, "Unknown booking")
 
             if booking.owner_id != x_user_id:
-                raise HTTPException(
-                    403, "Only the owner can cancel this booking"
-                )
+                raise HTTPException(403, "Only the owner can cancel this booking")
 
             if not future:
                 if booking.cancelled:
@@ -269,9 +314,7 @@ def create_app(
                 return booking
 
             if booking.series_id is None:
-                raise HTTPException(
-                    422, "Booking is not part of a series"
-                )
+                raise HTTPException(422, "Booking is not part of a series")
 
             occurrences = list(
                 session.exec(
@@ -284,15 +327,11 @@ def create_app(
             now = clock()
 
             if not any(item.start > now for item in occurrences):
-                raise HTTPException(
-                    422, "No future occurrences remain in this series"
-                )
+                raise HTTPException(422, "No future occurrences remain in this series")
 
             for occurrence in occurrences:
                 if occurrence.owner_id != x_user_id:
-                    raise HTTPException(
-                        403, "Only the owner can cancel this series"
-                    )
+                    raise HTTPException(403, "Only the owner can cancel this series")
 
             for occurrence in occurrences:
                 if occurrence.start > now and not occurrence.cancelled:
@@ -308,4 +347,5 @@ def create_app(
                     .order_by(col(Booking.start), col(Booking.id))
                 ).all()
             )
+
     return app
