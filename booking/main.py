@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -8,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from sqlmodel import Session, col, select
+from sqlmodel import Session, col, func, select
 
 from booking.clock import campus_now
 from booking.database import database_path, ensure_schema, make_engine
@@ -49,10 +50,50 @@ def has_conflict(
     )
 
 
+def future_booking_count(session: Session, owner_id: int, now: datetime) -> int:
+    """Count the owner's counted bookings: uncancelled, starting strictly after now."""
+    return session.exec(
+        select(func.count())
+        .select_from(Booking)
+        .where(
+            Booking.owner_id == owner_id,
+            col(Booking.cancelled).is_(False),
+            Booking.start > now,
+        )
+    ).one()
+
+
+def booking_quota(quota_limit: int | None) -> int:
+    """Resolve the quota: argument, else BOOKING_QUOTA_LIMIT, else 12."""
+    if quota_limit is not None:
+        if (
+            not isinstance(quota_limit, int)
+            or isinstance(quota_limit, bool)
+            or quota_limit < 1
+        ):
+            raise ValueError(
+                f"quota_limit must be a positive integer, got {quota_limit!r}"
+            )
+        return quota_limit
+    raw = os.environ.get("BOOKING_QUOTA_LIMIT")
+    if raw is None:
+        return 12
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"BOOKING_QUOTA_LIMIT must be a positive integer, got {raw!r}")
+    return value
+
 
 def create_app(
-    database: Path | None = None, *, clock: Callable[[], datetime] = campus_now
+    database: Path | None = None,
+    *,
+    clock: Callable[[], datetime] = campus_now,
+    quota_limit: int | None = None,
 ) -> FastAPI:
+    quota = booking_quota(quota_limit)
     engine = make_engine(database if database is not None else database_path())
 
     @asynccontextmanager
@@ -130,17 +171,22 @@ def create_app(
 
         End must follow start; overnight intervals are allowed. Intervals include
         start and exclude end. Overlapping uncancelled bookings on the same
-        resource return 409. Sequential requests only; simultaneous requests
-        may race between availability checking and insertion.
+        resource return 409. A user already holding the quota of counted
+        bookings (uncancelled, starting after now) gets 409. Sequential
+        requests only; simultaneous requests may race between checking and
+        insertion.
         """
         with Session(engine) as session:
             if session.get(User, x_user_id) is None:
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            validate_interval(request.start, request.end, clock())
+            now = clock()
+            validate_interval(request.start, request.end, now)
             if has_conflict(session, request.resource_id, request.start, request.end):
                 raise HTTPException(409, "Resource is already booked for this interval")
+            if future_booking_count(session, x_user_id, now) >= quota:
+                raise HTTPException(409, "Booking quota exceeded")
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
             session.commit()
