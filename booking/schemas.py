@@ -49,7 +49,7 @@ class BookingRead(BaseModel):
 
 
 class BookingSeriesCreate(BookingCreate):
-    recurrence_count: int = Field(strict=True, ge=1, le=12)
+    count: int = Field(strict=True, ge=1, le=12)
 
 
 class BookingSeriesRead(BookingRead):

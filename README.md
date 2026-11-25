@@ -101,10 +101,11 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
-| `POST /booking-series` | `X-User-ID` header and JSON with `recurrence_count` | 201, stored weekly occurrences |
+| `POST /booking-series` | `X-User-ID` header and JSON with `count` | 201, stored weekly occurrences |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
-| `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
+| `GET /series/{booking_id}` | Positive occurrence booking ID; no identity | 200, complete series in chronological order |
+| `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; optional `?future=true` for future series occurrences | 200, retained cancelled booking or series |
 
 IDs are positive integers up to 9223372036854775807. JSON resource IDs must be
 integers. Single creation accepts only `resource_id`, `start` and `end`; extra
@@ -125,10 +126,10 @@ Listing includes retained cancelled records; new bookings start uncancelled.
 Bookings survive server restart and repeat `init`; `reset --yes` deletes them.
 
 To create a weekly series, send the same fields plus an integer
-`recurrence_count` from 1 through 12:
+`count` from 1 through 12:
 
 ```json
-{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "recurrence_count": 3}
+{"resource_id": 1, "start": "2030-01-15T10:00:00", "end": "2030-01-15T11:00:00", "count": 3}
 ```
 
 The response is an array of occurrence bookings in chronological order. Each
@@ -147,6 +148,17 @@ equals the first occurrence's booking ID:
 The series request does not accept `owner_id` or `series_id`; the acting user
 owns every occurrence. Existing booking reads continue to use the single-booking
 response shape and do not expose `series_id`.
+### Retrieving a booking series
+
+Use any occurrence's booking ID with `GET /series/{booking_id}` to retrieve the
+complete series. No identity is needed. The response is a JSON array ordered by
+the occurrences' start times, with booking ID as a deterministic tie-breaker.
+Every item has the standard booking fields plus its shared integer `series_id`,
+and cancelled occurrences remain in the result.
+
+An unknown booking returns **404**. An existing standalone booking returns
+**409** because it has no series. The existing booking endpoints do not expose
+`series_id`; series membership is available only through this endpoint.
 
 All timestamps represent **Toronto campus wall time** (`America/Toronto`), encoded
 as `YYYY-MM-DDTHH:MM:SS` with optional 1–6 fractional second digits and **no offset
@@ -182,6 +194,12 @@ curl -X POST -H 'X-User-ID: 1' http://127.0.0.1:8000/bookings/1/cancel
 ```
 
 In PowerShell use `curl.exe`. Substitute the ID returned by creation.
+
+Add `?future=true` to cancel all uncancelled future occurrences in the same
+series. The response contains the complete updated series, including past and
+cancelled occurrences. A standalone booking or a series with no future
+occurrences returns 422. Retrying while future occurrences are already cancelled
+returns the unchanged series.
 
 These guarantees apply to **sequential requests**. A series is persisted
 all-or-nothing within its request, but simultaneous requests can both observe
