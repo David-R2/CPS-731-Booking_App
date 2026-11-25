@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -8,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from booking.clock import campus_now
@@ -50,8 +52,24 @@ def has_conflict(
 
 
 def create_app(
-    database: Path | None = None, *, clock: Callable[[], datetime] = campus_now
+    database: Path | None = None,
+    *,
+    clock: Callable[[], datetime] = campus_now,
+    quota_limit: int | None = None,
 ) -> FastAPI:
+    if quota_limit is None:
+        try:
+            quota_limit = int(os.environ.get("BOOKING_QUOTA_LIMIT", "12"))
+        except ValueError:
+            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer") from None
+        if quota_limit < 1:
+            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer")
+    if (
+        isinstance(quota_limit, bool)
+        or not isinstance(quota_limit, int)
+        or quota_limit < 1
+    ):
+        raise ValueError("Booking quota limit must be a positive integer")
     engine = make_engine(database if database is not None else database_path())
 
     @asynccontextmanager
@@ -116,6 +134,21 @@ def create_app(
         with Session(engine) as session:
             return list(session.exec(select(Resource).order_by(col(Resource.id))).all())
 
+    def check_quota(
+        session: Session, owner_id: int, now: datetime, requested: int
+    ) -> None:
+        count = session.exec(
+            select(func.count())
+            .select_from(Booking)
+            .where(
+                Booking.owner_id == owner_id,
+                col(Booking.cancelled).is_(False),
+                Booking.start > now,
+            )
+        ).one()
+        if count + requested > quota_limit:
+            raise HTTPException(409, "Booking quota exceeded")
+
     @app.post(
         "/bookings",
         response_model=BookingRead,
@@ -139,9 +172,11 @@ def create_app(
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            validate_interval(request.start, request.end, clock())
+            now = clock()
+            validate_interval(request.start, request.end, now)
             if has_conflict(session, request.resource_id, request.start, request.end):
                 raise HTTPException(409, "Resource is already booked for this interval")
+            check_quota(session, x_user_id, now, 1)
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
             session.commit()
@@ -182,6 +217,7 @@ def create_app(
                     raise HTTPException(
                         409, "Resource is already booked for this interval"
                     )
+            check_quota(session, x_user_id, now, len(occurrences))
             first_start, first_end = occurrences[0]
             first = Booking(
                 owner_id=x_user_id,

@@ -96,6 +96,21 @@ chosen through a request-body field. Resource and booking reads need no identity
 This is a local role simulation: anyone can choose either identity. There are no
 passwords, login, authentication or user/resource administration endpoints.
 
+## Booking quota
+
+Each user can hold up to 12 uncancelled future bookings across all resources.
+Each single booking and each series occurrence counts separately. Bookings
+starting at or before the current time do not count; cancellation frees a
+place. A request that would exceed the limit returns 409 and creates nothing.
+Resource conflicts and other existing validation are checked first.
+
+Set `BOOKING_QUOTA_LIMIT` to a positive integer before starting the server to
+change the limit. Tests or embedded users can pass `quota_limit` to
+`create_app`; the argument takes precedence over the environment variable.
+Invalid limits prevent the application from starting. Like availability checks,
+quota enforcement assumes sequential
+requests; simultaneous requests can exceed the limit.
+
 ## Booking API
 
 | Operation | Request | Success |
@@ -212,7 +227,7 @@ Errors use `{"detail": "message"}` consistently:
 | --- | --- |
 | 403 | `Only the owner can cancel this booking` |
 | 404 | `Unknown user`, `Unknown resource` or `Unknown booking` |
-| 409 | `Resource is already booked for this interval` or `Booking has already started` |
+| 409 | `Resource is already booked for this interval`, `Booking quota exceeded` or `Booking has already started` |
 | 422 | `Invalid request shape or timestamp`, `Start must be in the future`, `End must be after start` or `Duration must be at most eight hours` |
 
 A missing/malformed identity header also returns 422. Rejected single or series
