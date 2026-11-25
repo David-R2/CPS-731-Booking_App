@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -8,6 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from booking.clock import campus_now
@@ -50,8 +52,24 @@ def has_conflict(
 
 
 def create_app(
-    database: Path | None = None, *, clock: Callable[[], datetime] = campus_now
+    database: Path | None = None,
+    *,
+    clock: Callable[[], datetime] = campus_now,
+    quota_limit: int | None = None,
 ) -> FastAPI:
+    if quota_limit is None:
+        try:
+            quota_limit = int(os.environ.get("BOOKING_QUOTA_LIMIT", "12"))
+        except ValueError:
+            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer") from None
+        if quota_limit < 1:
+            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer")
+    if (
+        isinstance(quota_limit, bool)
+        or not isinstance(quota_limit, int)
+        or quota_limit < 1
+    ):
+        raise ValueError("Booking quota limit must be a positive integer")
     engine = make_engine(database if database is not None else database_path())
 
     @asynccontextmanager
@@ -66,7 +84,8 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue, single bookings and weekly booking series."
+            "Resource catalogue, single bookings, weekly series "
+            "and series retrieval."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -80,11 +99,55 @@ def create_app(
             status_code=422, content={"detail": "Invalid request shape or timestamp"}
         )
 
+    @app.get(
+        "/series/{booking_id}",
+        response_model=list[BookingSeriesRead],
+        responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    )
+    def get_series(
+        booking_id: Annotated[int, ApiPath(gt=0, le=9223372036854775807)],
+    ) -> list[Booking]:
+        """Retrieve a complete series from any occurrence's booking ID.
+
+        No identity is needed. All occurrences, including cancelled records, are
+        returned in chronological order. Unknown bookings return 404; a
+        standalone booking returns 409 because it has no series.
+        """
+        with Session(engine) as session:
+            booking = session.get(Booking, booking_id)
+            if booking is None:
+                raise HTTPException(404, "Unknown booking")
+            series_id = booking.series_id
+            if series_id is None:
+                raise HTTPException(409, "Booking is not part of a series")
+            return list(
+                session.exec(
+                    select(Booking)
+                    .where(Booking.series_id == series_id)
+                    .order_by(col(Booking.start), col(Booking.id))
+                ).all()
+            )
+
     @app.get("/resources", response_model=list[Resource])
     def list_resources() -> list[Resource]:
         """List persisted rooms and devices in ID order. No identity needed."""
         with Session(engine) as session:
             return list(session.exec(select(Resource).order_by(col(Resource.id))).all())
+
+    def check_quota(
+        session: Session, owner_id: int, now: datetime, requested: int
+    ) -> None:
+        count = session.exec(
+            select(func.count())
+            .select_from(Booking)
+            .where(
+                Booking.owner_id == owner_id,
+                col(Booking.cancelled).is_(False),
+                Booking.start > now,
+            )
+        ).one()
+        if count + requested > quota_limit:
+            raise HTTPException(409, "Booking quota exceeded")
 
     @app.post(
         "/bookings",
@@ -94,7 +157,7 @@ def create_app(
     )
     def create_booking(
         request: BookingCreate,
-        x_user_id: Annotated[int, Header(gt=0, le=9223372036854775807)],
+        x_user_id: UserId,
     ) -> Booking:
         """Create a future booking of at most eight hours owned by X-User-ID.
 
@@ -104,13 +167,16 @@ def create_app(
         may race between availability checking and insertion.
         """
         with Session(engine) as session:
-            if session.get(User, x_user_id) is None:
+            user = session.get(User, x_user_id)
+            if user is None:
                 raise HTTPException(404, "Unknown user")
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
-            validate_interval(request.start, request.end, clock())
+            now = clock()
+            validate_interval(request.start, request.end, now)
             if has_conflict(session, request.resource_id, request.start, request.end):
                 raise HTTPException(409, "Resource is already booked for this interval")
+            check_quota(session, x_user_id, now, 1)
             booking = Booking(owner_id=x_user_id, **request.model_dump())
             session.add(booking)
             session.commit()
@@ -133,19 +199,25 @@ def create_app(
             if session.get(Resource, request.resource_id) is None:
                 raise HTTPException(404, "Unknown resource")
             now = clock()
-            occurrences = [
-                (
-                    request.start + timedelta(weeks=index),
-                    request.end + timedelta(weeks=index),
-                )
-                for index in range(request.count)
-            ]
+            try:
+                occurrences = [
+                    (
+                        request.start + timedelta(weeks=index),
+                        request.end + timedelta(weeks=index),
+                    )
+                    for index in range(request.count)
+                ]
+            except OverflowError:
+                raise HTTPException(
+                    422, "Series dates exceed the supported range"
+                ) from None
             for start, end in occurrences:
                 validate_interval(start, end, now)
                 if has_conflict(session, request.resource_id, start, end):
                     raise HTTPException(
                         409, "Resource is already booked for this interval"
                     )
+            check_quota(session, x_user_id, now, len(occurrences))
             first_start, first_end = occurrences[0]
             first = Booking(
                 owner_id=x_user_id,
@@ -221,9 +293,7 @@ def create_app(
                 raise HTTPException(404, "Unknown booking")
 
             if booking.owner_id != x_user_id:
-                raise HTTPException(
-                    403, "Only the owner can cancel this booking"
-                )
+                raise HTTPException(403, "Only the owner can cancel this booking")
 
             if not future:
                 if booking.cancelled:
@@ -239,9 +309,7 @@ def create_app(
                 return booking
 
             if booking.series_id is None:
-                raise HTTPException(
-                    422, "Booking is not part of a series"
-                )
+                raise HTTPException(422, "Booking is not part of a series")
 
             occurrences = list(
                 session.exec(
@@ -254,15 +322,11 @@ def create_app(
             now = clock()
 
             if not any(item.start > now for item in occurrences):
-                raise HTTPException(
-                    422, "No future occurrences remain in this series"
-                )
+                raise HTTPException(422, "No future occurrences remain in this series")
 
             for occurrence in occurrences:
                 if occurrence.owner_id != x_user_id:
-                    raise HTTPException(
-                        403, "Only the owner can cancel this series"
-                    )
+                    raise HTTPException(403, "Only the owner can cancel this series")
 
             for occurrence in occurrences:
                 if occurrence.start > now and not occurrence.cancelled:
@@ -278,4 +342,5 @@ def create_app(
                     .order_by(col(Booking.start), col(Booking.id))
                 ).all()
             )
+
     return app
