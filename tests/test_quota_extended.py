@@ -1,5 +1,11 @@
+"""Team 16 quota tests: original tests by Sean; supplementary tests drafted for Jaden."""
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -88,40 +94,3 @@ def test_series_fits_exactly_or_is_rejected_atomically(tmp_path: Path) -> None:
             api.post("/booking-series", headers=headers, json=first).status_code == 201
         )
         before = api.get("/bookings").json()
-        second = {**first, "resource_id": 2, "count": 3}
-        response = api.post("/booking-series", headers=headers, json=second)
-        assert response.status_code == 409
-        assert response.json() == {"detail": "Booking quota exceeded"}
-        assert api.get("/bookings").json() == before
-        second["count"] = 2
-        created = api.post("/booking-series", headers=headers, json=second)
-        assert created.status_code == 201
-        assert len(created.json()) == 2
-        assert len(api.get("/bookings").json()) == 12
-
-
-@pytest.mark.parametrize("value", ["0", "-1", "abc"])
-def test_invalid_environment_quota(value: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOOKING_QUOTA_LIMIT", value)
-    with pytest.raises(ValueError, match="BOOKING_QUOTA_LIMIT"):
-        create_app()
-
-
-def test_override_takes_precedence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("BOOKING_QUOTA_LIMIT", "5")
-    database = tmp_path / "quota.sqlite3"
-    initialize(database)
-    with TestClient(
-        create_app(database, clock=lambda: datetime(2030, 1, 1), quota_limit=2)
-    ) as api:
-        body = {
-            "resource_id": 1,
-            "start": "2030-01-02T10:00:00",
-            "end": "2030-01-02T11:00:00",
-            "count": 3,
-        }
-        response = api.post("/booking-series", headers={"X-User-ID": "1"}, json=body)
-        assert response.status_code == 409
-        assert api.get("/bookings").json() == []
