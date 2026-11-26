@@ -101,11 +101,11 @@ passwords, login, authentication or user/resource administration endpoints.
 | Operation | Request | Success |
 | --- | --- | --- |
 | `POST /bookings` | `X-User-ID` header and JSON below | 201, stored booking |
-| `POST /booking-series` | `X-User-ID` header and JSON with `recurrence_count` | 201, stored weekly occurrences |
+| `POST /booking-series` | `X-User-ID` header and JSON with `count` | 201, stored weekly occurrences |
 | `GET /bookings/{booking_id}` | Positive integer ID; no identity | 200, stored booking |
 | `GET /bookings` | No parameters or identity | 200, all records in ID order, or `[]` |
 | `GET /series/{booking_id}` | Positive occurrence booking ID; no identity | 200, complete series in chronological order |
-| `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`; no body needed | 200, retained cancelled booking |
+| `POST /bookings/{booking_id}/cancel` | Positive integer ID and `X-User-ID`add `?future=true` to cancel eligible future occurrences in its series | no body needed | 200, retained cancelled booking |
 
 IDs are positive integers up to 9223372036854775807. JSON resource IDs must be
 integers. Single creation accepts only `resource_id`, `start` and `end`; extra
