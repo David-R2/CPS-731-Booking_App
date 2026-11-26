@@ -324,4 +324,4 @@ including transitive packages, are pinned in `requirements.txt`.
 Setup follows the official [Python 3.14 venv documentation](https://docs.python.org/3.14/library/venv.html).
 The API and database test patterns follow the
 [FastAPI first steps](https://fastapi.tiangolo.com/tutorial/first-steps/) and
-[SQLModel testing guide](https://sqlmodel.tiangolo.com/tutorial/fastapi/tests/).
+[SQLModel testing guide](https://sqlmodel.tiangolo.com/tutorial/fastapi/tests/). 
