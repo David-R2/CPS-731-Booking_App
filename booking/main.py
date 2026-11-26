@@ -45,7 +45,7 @@ def has_conflict(
                 col(Booking.cancelled).is_(False),
                 Booking.start < end,
                 Booking.end > start,
-                             )
+            )
         ).first()
         is not None
     )
@@ -121,7 +121,8 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue, single bookings, weekly series booking and series retrieval."
+            "Resource catalogue, single bookings, weekly series "
+            "and series retrieval."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
