@@ -21,9 +21,38 @@ python -m mypy booking
 
 ### 2a. Submission run
 
-<!-- SUBMISSION-RUN: replace this comment with the real output of the four
-     commands above, plus `python --version` and `git rev-parse --short HEAD`,
-     run on the final commit just before building the ZIP. -->
+Recorded on 2026-11-26, macOS.
+
+```text
+$ git rev-parse --short HEAD
+d4ae70c
+$ python --version
+Python 3.14.8
+$ python -m pytest
+============================= test session starts ==============================
+platform darwin -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/shanu/Desktop/CPS731/CPS-731-Booking_App
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.12.1, cov-7.1.0
+collected 118 items
+
+tests/test_bookings.py ..............                                    [ 11%]
+tests/test_cancellation.py .....                                         [ 16%]
+tests/test_quota_extended.py .............................               [ 40%]
+tests/test_resources.py ......                                           [ 45%]
+tests/test_series.py ................................................... [ 88%]
+.............                                                            [100%]
+
+============================= 118 passed in 3.15s ==============================
+$ python -m ruff check .
+All checks passed!
+$ python -m ruff format --check .
+17 files already formatted
+$ python -m mypy booking
+Success: no issues found in 7 source files
+```
+
 
 ### 2b. History of runs, including failures
 
