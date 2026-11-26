@@ -1,4 +1,4 @@
-"""Team 16 quota tests: original tests by Sean; supplementary tests drafted for Jaden."""
+"""Team 16 quota tests: original tests by Sean supplementary tests drafted by Jaden."""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from booking.database import initialize
 from booking.main import create_app
 
-
 # Original quota tests by Sean
 
 
@@ -25,9 +24,7 @@ def test_quota_counts_occurrences_and_releases_capacity(
     now = datetime(2030, 1, 1)
     clock = [now]
 
-    with TestClient(
-        create_app(database, clock=lambda: clock[0], quota_limit=3)
-    ) as api:
+    with TestClient(create_app(database, clock=lambda: clock[0], quota_limit=3)) as api:
         owner = {"X-User-ID": "1"}
         other = {"X-User-ID": "2"}
         start = now + timedelta(days=1)
@@ -62,17 +59,12 @@ def test_quota_counts_occurrences_and_releases_capacity(
         assert rejected.json()["detail"] == "Booking quota exceeded"
         assert api.get("/bookings").json() == before
 
-        assert api.post(
-            "/bookings", headers=other, json=body(2)
-        ).status_code == 201
+        assert api.post("/bookings", headers=other, json=body(2)).status_code == 201
 
-        conflict = api.post(
-            "/bookings", headers=owner, json=body(2)
-        )
+        conflict = api.post("/bookings", headers=owner, json=body(2))
 
         assert (
-            conflict.json()["detail"]
-            == "Resource is already booked for this interval"
+            conflict.json()["detail"] == "Resource is already booked for this interval"
         )
 
         assert (
@@ -83,15 +75,11 @@ def test_quota_counts_occurrences_and_releases_capacity(
             == 200
         )
 
-        assert api.post(
-            "/bookings", headers=owner, json=body(3)
-        ).status_code == 201
+        assert api.post("/bookings", headers=owner, json=body(3)).status_code == 201
 
         clock[0] = start + timedelta(days=1)
 
-        assert api.post(
-            "/bookings", headers=owner, json=body(4)
-        ).status_code == 201
+        assert api.post("/bookings", headers=owner, json=body(4)).status_code == 201
 
 
 def test_quota_configuration(
@@ -103,9 +91,7 @@ def test_quota_configuration(
     database = tmp_path / "quota.sqlite3"
     initialize(database)
 
-    with TestClient(
-        create_app(database, clock=lambda: datetime(2030, 1, 1))
-    ) as api:
+    with TestClient(create_app(database, clock=lambda: datetime(2030, 1, 1))) as api:
         payload = {
             "resource_id": 1,
             "start": "2030-01-02T10:00:00",
@@ -135,9 +121,7 @@ def test_series_fits_exactly_or_is_rejected_atomically(
     database = tmp_path / "quota.sqlite3"
     initialize(database)
 
-    with TestClient(
-        create_app(database, clock=lambda: datetime(2030, 1, 1))
-    ) as api:
+    with TestClient(create_app(database, clock=lambda: datetime(2030, 1, 1))) as api:
         headers = {"X-User-ID": "1"}
 
         first = {
@@ -171,9 +155,7 @@ def test_series_fits_exactly_or_is_rejected_atomically(
         )
 
         assert response.status_code == 409
-        assert response.json() == {
-            "detail": "Booking quota exceeded"
-        }
+        assert response.json() == {"detail": "Booking quota exceeded"}
         assert api.get("/bookings").json() == before
 
         second["count"] = 2
@@ -350,24 +332,13 @@ def test_series_remaining_quota(
 
             assert len(occurrences) == 2
             assert occurrences[0]["series_id"] is not None
-            assert len({
-                row["series_id"] for row in occurrences
-            }) == 1
+            assert len({row["series_id"] for row in occurrences}) == 1
 
-            assert all(
-                row["owner_id"] == 1
-                for row in occurrences
-            )
+            assert all(row["owner_id"] == 1 for row in occurrences)
 
-            assert all(
-                row["resource_id"] == 2
-                for row in occurrences
-            )
+            assert all(row["resource_id"] == 2 for row in occurrences)
 
-            assert all(
-                not row["cancelled"]
-                for row in occurrences
-            )
+            assert all(not row["cancelled"] for row in occurrences)
 
             assert len(api.get("/bookings").json()) == 12
 
@@ -399,9 +370,7 @@ def test_series_fills_entire_quota(
         assert len(occurrences) == 3
         assert occurrences[0]["series_id"] is not None
 
-        assert len({
-            row["series_id"] for row in occurrences
-        }) == 1
+        assert len({row["series_id"] for row in occurrences}) == 1
 
         for index, occurrence in enumerate(occurrences):
             expected_start = NOW + timedelta(
@@ -409,9 +378,7 @@ def test_series_fills_entire_quota(
                 weeks=index,
             )
 
-            assert datetime.fromisoformat(
-                occurrence["start"]
-            ) == expected_start
+            assert datetime.fromisoformat(occurrence["start"]) == expected_start
 
             assert datetime.fromisoformat(
                 occurrence["end"]
@@ -510,10 +477,7 @@ def test_single_cancellation_releases_quota(
 
         replacement = create_single(api, 2)
 
-        stored = {
-            row["id"]: row
-            for row in api.get("/bookings").json()
-        }
+        stored = {row["id"]: row for row in api.get("/bookings").json()}
 
         assert len(stored) == 2
         assert stored[original["id"]]["cancelled"] is True
@@ -559,15 +523,9 @@ def test_series_cancellation_releases_quota(
         assert replacement.status_code == 201
         assert len(replacement.json()) == 3
 
-        assert (
-            replacement.json()[0]["series_id"]
-            != occurrences[0]["series_id"]
-        )
+        assert replacement.json()[0]["series_id"] != occurrences[0]["series_id"]
 
-        stored = {
-            row["id"]: row
-            for row in api.get("/bookings").json()
-        }
+        stored = {row["id"]: row for row in api.get("/bookings").json()}
 
         assert len(stored) == 6
 
@@ -606,22 +564,13 @@ def test_quota_is_independent_for_each_user(
 
         stored = api.get("/bookings").json()
 
-        owner_bookings = [
-            row for row in stored
-            if row["owner_id"] == 1
-        ]
+        owner_bookings = [row for row in stored if row["owner_id"] == 1]
 
         assert owner_bookings == before
 
-        assert sum(
-            row["owner_id"] == 1
-            for row in stored
-        ) == 2
+        assert sum(row["owner_id"] == 1 for row in stored) == 2
 
-        assert sum(
-            row["owner_id"] == 2
-            for row in stored
-        ) == 1
+        assert sum(row["owner_id"] == 2 for row in stored) == 1
 
 
 # QT11: Conflict validation before quota validation
