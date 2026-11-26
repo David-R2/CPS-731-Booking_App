@@ -51,6 +51,42 @@ def has_conflict(
     )
 
 
+def future_booking_count(session: Session, owner_id: int, now: datetime) -> int:
+    """Count the owner's counted bookings: uncancelled, starting strictly after now."""
+    return session.exec(
+        select(func.count())
+        .select_from(Booking)
+        .where(
+            Booking.owner_id == owner_id,
+            col(Booking.cancelled).is_(False),
+            Booking.start > now,
+        )
+    ).one()
+
+
+def booking_quota(quota_limit: int | None) -> int:
+    """Resolve the quota: argument, else BOOKING_QUOTA_LIMIT, else 12."""
+    if quota_limit is not None:
+        if (
+            not isinstance(quota_limit, int)
+            or isinstance(quota_limit, bool)
+            or quota_limit < 1
+        ):
+            raise ValueError(
+                f"quota_limit must be a positive integer, got {quota_limit!r}"
+            )
+        return quota_limit
+    raw = os.environ.get("BOOKING_QUOTA_LIMIT")
+    if raw is None:
+        return 12
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise ValueError(f"BOOKING_QUOTA_LIMIT must be a positive integer, got {raw!r}")
+    return value
+
 
 def create_app(
     database: Path | None = None,
@@ -163,8 +199,10 @@ def create_app(
 
         End must follow start; overnight intervals are allowed. Intervals include
         start and exclude end. Overlapping uncancelled bookings on the same
-        resource return 409. Sequential requests only; simultaneous requests
-        may race between availability checking and insertion.
+        resource return 409. A user already holding the quota of counted
+        bookings (uncancelled, starting after now) gets 409. Sequential
+        requests only; simultaneous requests may race between checking and
+        insertion.
         """
         with Session(engine) as session:
             user = session.get(User, x_user_id)
