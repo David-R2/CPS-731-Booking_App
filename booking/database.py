@@ -25,7 +25,9 @@ def ensure_schema(engine: Engine) -> None:
             row[1] for row in connection.exec_driver_sql("PRAGMA table_info(booking)")
         }
         if "series_id" not in columns:
-            connection.exec_driver_sql("ALTER TABLE booking ADD COLUMN series_id INTEGER")
+            connection.exec_driver_sql(
+                "ALTER TABLE booking ADD COLUMN series_id INTEGER"
+            )
 
 
 def initialize(path: Path, *, reset: bool = False) -> None:

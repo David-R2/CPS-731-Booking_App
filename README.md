@@ -206,7 +206,7 @@ Errors use `{"detail": "message"}` consistently:
 | --- | --- |
 | 403 | `Only the owner can cancel this booking` |
 | 404 | `Unknown user`, `Unknown resource` or `Unknown booking` |
-| 409 | `Resource is already booked for this interval` or `Booking has already started` |
+| 409 | `Resource is already booked for this interval`, `Booking has already started` or `Booking quota exceeded` |
 | 422 | `Invalid request shape or timestamp`, `Start must be in the future`, `End must be after start` or `Duration must be at most eight hours` |
 
 A missing/malformed identity header also returns 422. Rejected single or series
@@ -231,6 +231,36 @@ the retained cancelled booking and its active replacement. Dates refresh each
 run. Repeating it on the same day returns 409 because the interval is occupied;
 use another interval in `/docs`, or stop the server, reset the sample database
 and restart before repeating. In PowerShell use `curl.exe` for the second command.
+
+## Booking quota (extension)
+
+Each user can hold up to **12 uncancelled future bookings** across all resources.
+Each single booking and each series occurrence counts separately. Bookings
+starting at or before the current time do not count, and cancelling a booking
+frees its place. A request that would exceed the limit returns **409**
+`{"detail": "Booking quota exceeded"}` and creates nothing; a rejected series
+stores no occurrences. Resource conflicts and the other existing validation are
+checked first, so their errors are unchanged.
+
+Set `BOOKING_QUOTA_LIMIT` to a positive integer before starting the server to
+change the limit, for example:
+
+```sh
+export BOOKING_QUOTA_LIMIT=5
+python -m uvicorn booking.main:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+Tests (or embedded users) can pass `quota_limit` to `create_app`; the argument
+takes precedence over the environment variable. An invalid limit (0, negative or
+not an integer) stops the application from starting with a `ValueError`. There
+is no HTTP endpoint for reading or changing quotas. Like availability checks,
+quota enforcement assumes sequential requests: simultaneous requests can exceed
+the limit.
+
+Extension documents: [`docs/extension-plan.md`](docs/extension-plan.md) (plan),
+[`docs/extension-design.md`](docs/extension-design.md) (design as built,
+changes, limitations), [`docs/extension-verification.md`](docs/extension-verification.md)
+(commands and results), [`docs/retrospective.md`](docs/retrospective.md).
 
 ## Verify and read the code
 

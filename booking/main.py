@@ -45,7 +45,7 @@ def has_conflict(
                 col(Booking.cancelled).is_(False),
                 Booking.start < end,
                 Booking.end > start,
-                             )
+            )
         ).first()
         is not None
     )
@@ -94,19 +94,7 @@ def create_app(
     clock: Callable[[], datetime] = campus_now,
     quota_limit: int | None = None,
 ) -> FastAPI:
-    if quota_limit is None:
-        try:
-            quota_limit = int(os.environ.get("BOOKING_QUOTA_LIMIT", "12"))
-        except ValueError:
-            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer") from None
-        if quota_limit < 1:
-            raise ValueError("BOOKING_QUOTA_LIMIT must be a positive integer")
-    if (
-        isinstance(quota_limit, bool)
-        or not isinstance(quota_limit, int)
-        or quota_limit < 1
-    ):
-        raise ValueError("Booking quota limit must be a positive integer")
+    quota = booking_quota(quota_limit)
     engine = make_engine(database if database is not None else database_path())
 
     @asynccontextmanager
@@ -121,7 +109,8 @@ def create_app(
         title="Campus resource booking",
         description=(
             "A course simulation of an existing system. "
-            "Resource catalogue, single bookings, weekly series booking and series retrieval."
+            "Resource catalogue, single bookings, weekly series "
+            "booking and series retrieval."
         ),
         lifespan=lifespan,
         responses={422: {"model": ErrorResponse}},
@@ -173,16 +162,8 @@ def create_app(
     def check_quota(
         session: Session, owner_id: int, now: datetime, requested: int
     ) -> None:
-        count = session.exec(
-            select(func.count())
-            .select_from(Booking)
-            .where(
-                Booking.owner_id == owner_id,
-                col(Booking.cancelled).is_(False),
-                Booking.start > now,
-            )
-        ).one()
-        if count + requested > quota_limit:
+        """Reject (409) if `requested` new bookings would exceed the quota."""
+        if future_booking_count(session, owner_id, now) + requested > quota:
             raise HTTPException(409, "Booking quota exceeded")
 
     @app.post(

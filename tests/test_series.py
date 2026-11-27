@@ -504,7 +504,6 @@ def test_series_cancel_preserves_already_cancelled_and_is_idempotent(env: Env) -
     assert bookings(env) == snapshot
 
 
-
 def test_series_cancel_with_no_future_occurrences_changes_nothing(env: Env) -> None:
     series = create_series(env, count=2)
     env.clock.now = START + timedelta(weeks=3)
@@ -558,7 +557,6 @@ def test_non_owner_cannot_cancel_series_even_after_cancellation(env: Env) -> Non
     )
     assert response.status_code == 403
     assert bookings(env) == after_owner
-
 
 
 @pytest.mark.parametrize(
